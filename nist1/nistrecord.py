@@ -21,7 +21,7 @@ class NistRecord(object):
       </record>
     '''
 
-    def __init__(self, xmlString):
+    def __init__(self, xmlString, certificate = None):
         '''
           ## Version number (ascii text)
           ## Update frequency (4 bytes)
@@ -32,33 +32,50 @@ class NistRecord(object):
         '''
         root = ET.fromstring(xmlString)
 
-        self._version = root.find('version').text
-        self._frequency = int(root.find('frequency').text)
-        self._timestamp = int(root.find('timeStamp').text)
-        self._seedValue = root.find('seedValue').text
-        self._previousOutputValue = root.find('previousOutputValue').text
-        self._signatureValue = root.find('signatureValue').text
-        self._statusCode = int(root.find('statusCode').text)
-
-        self.randomNumber = ('0x' + root.find('outputValue').text).encode('hex')
+        self.version        = root.find('version').text
+        self.frequency      = int(root.find('frequency').text)
+        self.timestamp      = int(root.find('timeStamp').text)
+        self.seed           = long(root.find('seedValue').text, 16)
+        self.previousOutput = long(root.find('previousOutputValue').text, 16)
+        # reverse it and change from little to big endian. Store it as bin, liek the file
+        self.signature      = binascii.unhexlify(self._msByteSwap(root.find('signatureValue').text))
+        self.statusCode     = int(root.find('statusCode').text)
+        self.randomNumber   = long(root.find('outputValue').text,16)
         #if not self.isVerified():
         #  raise ValueError
+        self.certificate = certificate
+        
+    def _msByteSwap(self, nistSignature):
+        """ 
+        reverse the whole string and then change the bytes from little to big endian
+        """
+        revSignature = nistSignature[::-1]
+        size = 2
+        return ''.join(revSignature[pos:pos + size][::-1] for pos in xrange(0, len(revSignature), size))
 
+    def _binify(self, l):
+        """
+        because we can't struct.pack a long. Thanks http://stackoverflow.com/a/4670889
+        """
+        h = hex(l)[2:].rstrip('L')
+        return binascii.unhexlify('0'*(32-len(h))+h)
+
+    
     def toBinary(self):
-        return self._version + \
-            pack('>1I1Q64s64s1I',
-                self._frequency,
-                self._timestamp,
-                binascii.unhexlify(self._seedValue),
-                binascii.unhexlify(self._previousOutputValue),
-                self._statusCode
-            )
+        return self.version \
+            + pack('>1I1Q64s64s1I',
+                self.frequency,
+                self.timestamp,
+                binascii.unhexlify((hex(self.seed)[2:]).rstrip('L')),
+                binascii.unhexlify((hex(self.previousOutput)[2:]).rstrip('L')),
+                self.statusCode )
+            
 
     def isVerified(self):
         '''
         Checks the signatures and hashes and blah
         #Thanks: http://hackaday.com/2014/12/19/nist-randomness-beacon/
-        /usr/bin/openssl x509 -pubkey -noout -in beacon.cer &gt; beaconpubkey.pem
+        /usr/bin/openssl x509 -pubkey -noout -in beaconistRecordn.cer &gt; beaconpubkey.pem
         ## Test signature / key on packed data
         /usr/bin/openssl dgst -sha512 -verify beaconpubkey.pem -signature beacon.sig beacon.bin
 
@@ -69,22 +86,16 @@ class NistRecord(object):
         verified = ("OK" in message and not "error" in message)
         return verified
         '''
-        
-        sig = self._signatureValue[::-1] # doing [begin:end:-step] with begin and end unspecified
+        sig = self.signature
         bbin =  self.toBinary()
-        r = requests.get('https://beacon.nist.gov/certificate/beacon.cer')
-        if r.status_code != 200:
-            raise IOError
-        else:
-            cer = r.content
-            
+        
         #stuff data into temp files
-        cer_fd, cer_filename = tempfile.mkstemp()
-        pem_fd, pem_filename = tempfile.mkstemp()
-        sig_fd, sig_filename = tempfile.mkstemp()
-        bbin_fd, bbin_filename = tempfile.mkstemp()
+        cer_fd, cer_filename   = tempfile.mkstemp( suffix='.cer', text=True )
+        pem_fd, pem_filename   = tempfile.mkstemp( suffix='.pem', text=True )
+        sig_fd, sig_filename   = tempfile.mkstemp( suffix='.sig', text=True )
+        bbin_fd, bbin_filename = tempfile.mkstemp( suffix='.bin', text=False)
         try:
-            os.write(cer_fd, cer)
+            os.write(cer_fd, self.certificate)
             os.close(cer_fd)
 
             p1 = Popen(["openssl", "x509", "-pubkey",  "-noout", "-in", cer_filename], stdin = PIPE, stdout = PIPE, stderr = PIPE)       
@@ -103,24 +114,11 @@ class NistRecord(object):
             verified = ("OK" in message and not "error" in message)
             return verified
             #return message
-
             
         finally:
+            os.remove(cer_filename)
             os.remove(pem_filename)
             os.remove(sig_filename)
             os.remove(bbin_filename)
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
